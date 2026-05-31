@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, executor
 from aiogram.types import ParseMode, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
@@ -11,7 +11,8 @@ import sqlite3
 
 # ============ KONFIGURATSIYA ============
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+ADMIN_ID_ENV = os.getenv("ADMIN_ID")
+ADMIN_ID = int(ADMIN_ID_ENV) if ADMIN_ID_ENV else 0
 REQUIRED_CHANNEL = "@kitoblarim_77_7"
 
 # Botni ishga tushirish
@@ -378,66 +379,36 @@ async def admin_stats(callback: types.CallbackQuery):
     c.execute("SELECT COUNT(*) FROM premium_users WHERE expire_date > datetime('now')")
     premium = c.fetchone()[0]
     
-    c.execute("SELECT COUNT(*) FROM user_books")
-    total_downloads = c.fetchone()[0]
-    
-    c.execute("SELECT AVG(rating) FROM books WHERE rating > 0")
-    avg_rating = c.fetchone()[0] or 0
-    
-    c.execute("SELECT COUNT(*) FROM messages WHERE is_answered = 0")
-    unread = c.fetchone()[0]
-    
-    c.execute("SELECT COUNT(*) FROM messages")
-    total_messages = c.fetchone()[0]
-    
-    c.execute("SELECT COUNT(*) FROM referrals")
-    total_referrals = c.fetchone()[0]
-    
-    c.execute("SELECT SUM(balance) FROM users")
-    total_balance = c.fetchone()[0] or 0
-    
-    text = f"📊 *BOT STATISTIKASI*\n\n"
-    text += f"👤 Foydalanuvchilar: {users}\n"
-    text += f"📚 Kitoblar: {books}\n"
-    text += f"📥 Yuklamalar: {downloads}\n"
-    text += f"📊 Umumiy yuklamalar: {total_downloads}\n"
-    text += f"⭐ O'rtacha reyting: {avg_rating:.1f}\n"
-    text += f"💎 Premium a'zolar: {premium}\n"
-    text += f"💰 Umumiy ballar: {total_balance}\n"
-    text += f"👥 Referallar: {total_referrals}\n"
-    text += f"💬 Jami xabarlar: {total_messages}\n"
-    text += f"💬 O'qilmagan xabarlar: {unread}\n"
+    text = f"📊 *BATAFSIL STATISTIKA*\n\n👥 Jami foydalanuvchilar: {users}\n📚 Jami kitoblar: {books}\n📥 Jami yuklamalar: {downloads}\n💎 Premium a'zolar: {premium}"
     
     keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton("🔄 YANGILASH", callback_data="admin_stats"))
     keyboard.add(InlineKeyboardButton("◀️ ORQAGA", callback_data="admin_panel"))
     
     await callback.message.edit_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
     await callback.answer()
 
-# ============ FOYDALANUVCHILAR RO'YXATI ============
 @dp.callback_query_handler(lambda c: c.data == 'admin_users_list')
 async def admin_users_list(callback: types.CallbackQuery, page=0):
     if callback.from_user.id != ADMIN_ID:
         return
     
     offset = page * 10
-    c.execute("SELECT id, username, full_name, balance, level, is_blocked, created_at FROM users WHERE is_admin = 0 ORDER BY created_at DESC LIMIT 10 OFFSET ?", (offset,))
+    c.execute("SELECT id, full_name, username, balance FROM users WHERE is_admin = 0 ORDER BY created_at DESC LIMIT 10 OFFSET ?", (offset,))
     users = c.fetchall()
     
     if not users:
-        await callback.answer("Foydalanuvchilar topilmadi!")
+        await callback.message.edit_text("👤 Foydalanuvchilar topilmadi.", reply_markup=get_admin_keyboard())
         return
     
     text = f"👥 *FOYDALANUVCHILAR RO'YXATI* (Sahifa {page+1})\n\n"
     for user in users:
-        status = "🚫" if user[5] == 1 else "✅"
-        username_display = f"@{user[1]}" if user[1] else "Yo'q"
-        text += f"{status} *{user[2]}*\n"
-        text += f"   🆔 {user[0]} | 👤 {username_display} | 💰 {user[3]} | 📊 {user[4]}\n"
-        text += f"   📅 Qo'shilgan: {format_datetime(user[6])}\n\n"
+        username_display = f"@{user[2]}" if user[2] else "Yo'q"
+        text += f"👤 {user[1]} | 🆔 {user[0]}\n👤 {username_display} | 💰 {user[3]} ball\n\n"
     
-    keyboard = InlineKeyboardMarkup(row_width=3)
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    for user in users[:5]:
+        keyboard.add(InlineKeyboardButton(f"👤 {user[1][:15]}", callback_data=f"admin_view_user_{user[0]}"))
+    
     c.execute("SELECT COUNT(*) FROM users WHERE is_admin = 0")
     total = c.fetchone()[0]
     pages = (total + 9) // 10
@@ -445,19 +416,20 @@ async def admin_users_list(callback: types.CallbackQuery, page=0):
     if pages > 1:
         nav_buttons = []
         if page > 0:
-            nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f"users_page_{page-1}"))
+            nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f"admin_users_page_{page-1}"))
         nav_buttons.append(InlineKeyboardButton(f"{page+1}/{pages}", callback_data="none"))
         if page < pages - 1:
-            nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f"users_page_{page+1}"))
+            nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f"admin_users_page_{page+1}"))
         keyboard.row(*nav_buttons)
     
     keyboard.add(InlineKeyboardButton("◀️ ORQAGA", callback_data="admin_panel"))
+    
     await callback.message.edit_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
     await callback.answer()
 
-@dp.callback_query_handler(lambda c: c.data.startswith('users_page_'))
-async def users_page(callback: types.CallbackQuery):
-    page = int(callback.data.split('_')[2])
+@dp.callback_query_handler(lambda c: c.data.startswith('admin_users_page_'))
+async def admin_users_page(callback: types.CallbackQuery):
+    page = int(callback.data.split('_')[3])
     await admin_users_list(callback, page)
 
 @dp.callback_query_handler(lambda c: c.data.startswith('admin_view_user_'))
@@ -467,36 +439,25 @@ async def admin_view_user(callback: types.CallbackQuery):
     
     user_id = int(callback.data.split('_')[3])
     
-    c.execute("SELECT username, full_name, balance, level, is_blocked, created_at, last_active FROM users WHERE id=?", (user_id,))
+    c.execute("SELECT id, full_name, username, balance, is_blocked, created_at, last_active FROM users WHERE id=?", (user_id,))
     user = c.fetchone()
     
     if not user:
         await callback.answer("Foydalanuvchi topilmadi!")
         return
     
-    c.execute("SELECT COUNT(*) FROM user_books WHERE user_id=?", (user_id,))
-    books_count = c.fetchone()[0]
-    
-    c.execute("SELECT COUNT(*) FROM referrals WHERE user_id=?", (user_id,))
-    referrals_count = c.fetchone()[0]
-    
-    c.execute("SELECT COUNT(*) FROM referrals WHERE referred_id=?", (user_id,))
-    referred_by = c.fetchone()[0]
-    
-    username_display = f"@{user[0]}" if user[0] else "Yo'q"
+    is_prem = await check_premium(user_id)
+    prem_status = "💎 PREMIUM" if is_prem else "Oddiy"
+    blocked_status = "🚫 BLOKLANGAN" if user[4] == 1 else "✅ FAOL"
     
     text = f"👤 *FOYDALANUVCHI MA'LUMOTLARI*\n\n"
-    text += f"*Ismi:* {user[1]}\n"
-    text += f"*Username:* {username_display}\n"
-    text += f"*ID:* {user_id}\n"
-    text += f"*Balans:* {user[2]} ball\n"
-    text += f"*Daraja:* {user[3]}\n"
-    text += f"*Holat:* {'🚫 Bloklangan' if user[4] == 1 else '✅ Faol'}\n\n"
-    text += f"📚 *Statistika:*\n"
-    text += f"• Yuklagan kitoblar: {books_count}\n"
-    text += f"• Taklif qilganlar: {referrals_count}\n"
-    text += f"• Kim taklif qilgan: {'✅ Ha (' + str(referred_by) + ' ta)' if referred_by > 0 else '❌ Yo\\'q'}\n\n"
-    text += f"📅 Qo'shilgan: {format_datetime(user[5])}\n"
+    text += f"👤 Ism: {user[1]}\n"
+    text += f"🆔 ID: {user[0]}\n"
+    text += f"👤 Username: @{user[2] if user[2] else 'Yoq'}\n"
+    text += f"💰 Balans: {user[3]} ball\n"
+    text += f"📊 Status: {prem_status}\n"
+    text += f"🚫 Holat: {blocked_status}\n"
+    text += f"📅 Ro'yxatdan o'tdi: {format_datetime(user[5])}\n"
     text += f"🕐 Oxirgi faollik: {format_datetime(user[6])}"
     
     keyboard = InlineKeyboardMarkup(row_width=2)
@@ -832,7 +793,8 @@ async def admin_view_book(callback: types.CallbackQuery):
     text += f"*Reyting:* {book[6]}\n"
     text += f"*Yuklamalar:* {book[7]}\n"
     text += f"*Ko'rishlar:* {book[8]}\n"
-    text += f"*Premium:* {'✅ Ha' if book[9] == 1 else '❌ Yo\\'q'}\n"
+    is_prem_val = '✅ Ha' if book[9] == 1 else "❌ Yo'q"
+    text += f"*Premium:* {is_prem_val}\n"
     text += f"*Qo'shilgan:* {format_datetime(book[10])}\n"
     text += f"*File ID:* `{book[5]}`"
     
@@ -930,7 +892,8 @@ async def add_book_premium(callback: types.CallbackQuery, state: FSMContext):
     
     await state.finish()
     
-    text = f"✅ *KITOB QO'SHILDI!*\n\n📖 Nomi: {data['title']}\n✍️ Muallif: {data['author']}\n📚 Kategoriya: {data['category']}\n💎 Premium: {'✅ Ha' if is_premium else '❌ Yo\\'q'}\n🆔 Kitob ID: {book_id}"
+    is_prem_val = '✅ Ha' if is_premium else "❌ Yo'q"
+    text = f"✅ *KITOB QO'SHILDI!*\n\n📖 Nomi: {data['title']}\n✍️ Muallif: {data['author']}\n📚 Kategoriya: {data['category']}\n💎 Premium: {is_prem_val}\n🆔 Kitob ID: {book_id}"
     
     await callback.message.edit_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
     await callback.answer()
@@ -1114,7 +1077,8 @@ async def view_book_handler(callback: types.CallbackQuery):
     c.execute("UPDATE books SET views = views + 1 WHERE id=?", (book_id,))
     conn.commit()
     
-    text = f"📖 *{book[1]}*\n\n✍️ Muallif: {book[2]}\n📚 Kategoriya: {book[3]}\n📝 Tavsif: {book[4]}\n⭐ Reyting: {book[6]}\n📥 Yuklamalar: {book[7]}\n💎 Premium: {'✅ Ha' if book[9] == 1 else '❌ Yo\\'q'}"
+    is_prem_val = '✅ Ha' if book[9] == 1 else "❌ Yo'q"
+    text = f"📖 *{book[1]}*\n\n✍️ Muallif: {book[2]}\n📚 Kategoriya: {book[3]}\n📝 Tavsif: {book[4]}\n⭐ Reyting: {book[6]}\n📥 Yuklamalar: {book[7]}\n💎 Premium: {is_prem_val}"
     
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(InlineKeyboardButton("📥 YUKLAB OLISH", callback_data=f"download_book_{book_id}"))
@@ -1251,7 +1215,8 @@ async def my_profile_handler(callback: types.CallbackQuery):
     c.execute("SELECT full_name, balance, level, created_at FROM users WHERE id=?", (user_id,))
     user = c.fetchone()
     is_prem = await check_premium(user_id)
-    text = f"👤 *PROFILIM*\n\nIsm: {user[0]}\nID: {user_id}\nBalans: {user[1]} ball\nDaraja: {user[2]}\nPremium: {'✅ Ha' if is_prem else '❌ Yo\\'q'}\nQo'shilgan vaqt: {format_datetime(user[3])}"
+    prem_status = '✅ Ha' if is_prem else "❌ Yo'q"
+    text = f"👤 *PROFILIM*\n\nIsm: {user[0]}\nID: {user_id}\nBalans: {user[1]} ball\nDaraja: {user[2]}\nPremium: {prem_status}\nQo'shilgan vaqt: {format_datetime(user[3])}"
     keyboard = InlineKeyboardMarkup()
     keyboard.add(InlineKeyboardButton("🏠 BOSH MENYU", callback_data="main_menu"))
     await callback.message.edit_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
@@ -1264,5 +1229,9 @@ async def on_startup(dp):
     print(f"📢 Kanal: {REQUIRED_CHANNEL}")
 
 if __name__ == '__main__':
-    from aiogram import executor
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    if not TOKEN:
+        print("XATO: BOT_TOKEN muhit o'zgaruvchisi topilmadi!")
+    elif not ADMIN_ID:
+        print("XATO: ADMIN_ID muhit o'zgaruvchisi topilmadi!")
+    else:
+        executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
